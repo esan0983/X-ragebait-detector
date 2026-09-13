@@ -42,7 +42,7 @@ from typing import Iterable
 
 import pandas as pd
 
-from data.raw.queries import queries
+from utils import queries
 
 try:
     from twikit import Client, TooManyRequests
@@ -63,7 +63,7 @@ STATE_PATH = DATA_DIR / "_collection_state.json"  # tracks query rotation progre
 MONTH_START = datetime(2026, 8, 1, tzinfo=timezone.utc)
 MONTH_END = datetime(2026, 9, 1, tzinfo=timezone.utc)  # exclusive
 
-MIN_ENGAGEMENT = 500          # likes + replies + reposts
+MIN_ENGAGEMENT = 100          # likes + replies + reposts
 MIN_LEN, MAX_LEN = 50, 280    # character bounds on post text
 
 MIN_SLEEP_SECS = 30.0         # baseline "be nice" delay between API calls
@@ -232,7 +232,6 @@ def passes_filters(tweet) -> tuple[bool, dict]:
         "reposts": reposts,
         "engagement_total": total,
     }
-
 
 # --------------------------------------------------------------------------- #
 # Auth

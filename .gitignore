@@ -1,3 +1,4 @@
 *.pyc
 data/
 api/__pycache__/
+utils/configs.py
