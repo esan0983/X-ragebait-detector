@@ -60,10 +60,10 @@ PARQUET_PATH = DATA_DIR / "ragebait_candidates.parquet"
 COOKIES_PATH = Path("data/raw/cookies.json")
 STATE_PATH = DATA_DIR / "_collection_state.json"  # tracks query rotation progress
 
-MONTH_START = datetime(2026, 8, 1, tzinfo=timezone.utc)
+MONTH_START = datetime(2026, 1, 1, tzinfo=timezone.utc)
 MONTH_END = datetime(2026, 9, 1, tzinfo=timezone.utc)  # exclusive
 
-MIN_ENGAGEMENT = 100          # likes + replies + reposts
+MIN_ENGAGEMENT = 50          # likes + replies + reposts
 MIN_LEN, MAX_LEN = 50, 280    # character bounds on post text
 
 MIN_SLEEP_SECS = 30.0         # baseline "be nice" delay between API calls
@@ -77,11 +77,14 @@ RESULTS_PER_QUERY_PAGE = 20   # twikit search page size ballpark
 MAX_BACKOFF_SECS = 900        # cap exponential backoff at 15 min
 BACKOFF_BASE = 20.0
 
-# A deliberately broad/diverse pool of search terms so we don't fixate on
-# one account, topic, or community. Mixes politics, culture-war bait,
-# sports, tech, relationships, etc. -- classic ragebait-prone domains.
-# `min_faves` is applied query-side as a coarse pre-filter; we still
-# re-verify the full engagement threshold ourselves after fetching.
+MAX_PAGES_PER_QUERY = 3       # follow the cursor this many times before moving on
+PRODUCTS = ["Top", "Latest"]  # alternate so we don't keep re-hitting the same "Top" set
+
+# Rotate the since/until window per request so a repeated query over many runs
+# sweeps different slices of the target range instead of always returning the
+# same "Top"/"Latest" snapshot for the full Jan-Aug window.
+WINDOW_DAYS = 14
+
 SEARCH_QUERIES = queries
 
 logging.basicConfig(
@@ -233,6 +236,23 @@ def passes_filters(tweet) -> tuple[bool, dict]:
         "engagement_total": total,
     }
 
+def build_search_query(base_query: str, request_index: int) -> str:
+    """Builds a search string with a rotating since/until window so the same
+    base query returns a different slice of the target date range on
+    successive requests, instead of colliding with the same cached top/latest
+    results every time."""
+    total_days = (MONTH_END - MONTH_START).days
+    n_windows = max(1, total_days // WINDOW_DAYS)
+    window_idx = request_index % n_windows
+    win_start = MONTH_START + pd.Timedelta(days=window_idx * WINDOW_DAYS)
+    win_end = min(win_start + pd.Timedelta(days=WINDOW_DAYS), MONTH_END)
+
+    return (
+        f'{base_query} min_faves:{MIN_ENGAGEMENT // 3} lang:en '
+        f'since:{win_start.date()} until:{win_end.date()}'
+    )
+
+
 # --------------------------------------------------------------------------- #
 # Auth
 # --------------------------------------------------------------------------- #
@@ -304,15 +324,15 @@ async def collect(target_total: int, max_requests: int | None):
 
         # Query-side coarse filter narrows the firehose; we still re-check
         # everything in passes_filters() since search operators aren't exact.
-        search_query = (
-            f'{query} min_faves:{MIN_ENGAGEMENT // 3} lang:en '
-            f'since:2026-08-01 until:2026-09-01'
-        )
+        # Rotate the date window per request and alternate Top/Latest so the
+        # same base query doesn't keep returning the same cached snapshot.
+        search_query = build_search_query(query, state.total_requests_made)
+        product = PRODUCTS[state.total_requests_made % len(PRODUCTS)]
 
         try:
             log.info(f"[req #{state.total_requests_made + 1}] "
-                      f"Searching: '{search_query}'")
-            results = await client.search_tweet(search_query, product="Top")
+                      f"Searching ({product}): '{search_query}'")
+            results = await client.search_tweet(search_query, product=product)
             limiter.reset_errors()
         except TooManyRequests:
             log.warning("Rate limited by X (429). Entering backoff.")
@@ -326,31 +346,50 @@ async def collect(target_total: int, max_requests: int | None):
         state.total_requests_made += 1
         requests_this_run += 1
 
-        tweets = list(results) if results else []
-        random.shuffle(tweets)  # don't always process/keep in the API's default order
+        found_this_query = 0
+        page = results
+        for page_num in range(1, MAX_PAGES_PER_QUERY + 1):
+            tweets = list(page) if page else []
+            random.shuffle(tweets)  # don't always process/keep in the API's default order
 
-        found_this_page = 0
-        for tweet in tweets:
-            tid = str(tweet.id)
-            if tid in state.seen_ids:
-                continue
-            ok, row = passes_filters(tweet)
-            state.seen_ids.add(tid)
-            if not ok:
-                continue
-            row["query_source"] = query
-            row["collected_at"] = datetime.now(timezone.utc).isoformat()
-            new_rows_buffer.append(row)
-            found_this_page += 1
+            found_this_page = 0
+            for tweet in tweets:
+                tid = str(tweet.id)
+                if tid in state.seen_ids:
+                    continue
+                ok, row = passes_filters(tweet)
+                state.seen_ids.add(tid)
+                if not ok:
+                    continue
+                row["query_source"] = query
+                row["collected_at"] = datetime.now(timezone.utc).isoformat()
+                new_rows_buffer.append(row)
+                found_this_page += 1
 
-        log.info(f"  -> {found_this_page} qualifying posts from this query "
-                  f"(buffer={len(new_rows_buffer)}, total so far="
-                  f"{len(current_df) + len(new_rows_buffer)}/{target_total})")
+            found_this_query += found_this_page
+            log.info(f"  -> page {page_num}: {found_this_page} qualifying posts "
+                      f"(buffer={len(new_rows_buffer)}, total so far="
+                      f"{len(current_df) + len(new_rows_buffer)}/{target_total})")
 
-        if len(new_rows_buffer) >= SAVE_EVERY_N_NEW:
-            current_df = append_and_save(current_df, new_rows_buffer)
-            new_rows_buffer = []
-            state.save()
+            if len(new_rows_buffer) >= SAVE_EVERY_N_NEW:
+                current_df = append_and_save(current_df, new_rows_buffer)
+                new_rows_buffer = []
+                state.save()
+
+            if page_num < MAX_PAGES_PER_QUERY:
+                # twikit's Result supports cursor pagination via .next();
+                # stop early if the site reports no further pages.
+                try:
+                    await limiter.wait()
+                    next_page = await page.next()
+                except Exception as e:  # noqa: BLE001
+                    log.warning(f"Pagination failed ({e!r}); moving to next query.")
+                    break
+                if not next_page:
+                    break
+                page = next_page
+
+        log.info(f"  => {found_this_query} total qualifying posts for this query/window")
 
         await limiter.wait()
 

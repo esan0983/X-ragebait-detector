@@ -9,8 +9,8 @@ A data science & machine learning project, with most of its inspiration taken fr
 I used the twikit package. Since I don't want to get banned, I want to do this right with a robust architecture and proper API calling, so with a detailed enough prompt, I let Claude generate a data collection script. The script handles rate limits well with randomized wait times and exponential back-offs as a response to 429s.  
 
 These are the following criteria for data collection:
-* Posted within August 2026
-* Likes + replies + reposts >= 100
+* Posted on January to August 2026
+* Likes + replies + reposts >= 50
 * In between 50 and 280 characters  
 
 A large table of keywords was constructed to increase the chances of collecting ragebait/controversial posts. There is a huge trade-off: a lot of the statistical analysis (especially the studies made by the Japanese paper) will be subject to selection bias. For example, we can't construct a word cloud anymore as the results will essentially just duplicate the keyword table. In return, we will have a lot of training data for the LLM model in a significantly shorter period of time, and our machine learning model will less likely struggle with class imbalance.
@@ -46,9 +46,8 @@ It's very tedious to annotate the data on a large scale. Hence, we will use the 
 ### Human Validation
 Two humans and GPT 5.6 Luna will annotate 500 posts to check for agreement.
 
-## Commit Notes (9/12)
-* Created a small cleaning.py program that performs minor data cleaning tasks
-* Generated code that will call the OpenAI client and label data for model training
+## Commit Notes (9/16)
+* Fixed slow collection problem
 
 ## Sources
 1. From Detection to Characterization: A Large-Scale Study of Ragebait on Japanese X. (n.d.). https://arxiv.org/html/2609.02262v1
