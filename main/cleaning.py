@@ -1,18 +1,20 @@
 import pandas as pd
 
-def clean(df) -> pd.DataFrame:
-    df = df.drop_duplicates(subset=['tweet_id'])
-    df = df['text']
-
-    discarded_words = ['Clancy']
+def clean(df: pd.DataFrame) -> pd.DataFrame:
+    df['text'] = df['text'].str.strip()
+    
+    df = df.drop_duplicates(subset=['text'])
+    
+    discarded_words = []
     regex_pattern = '|'.join(discarded_words)
-
     df = df[~df['text'].str.contains(regex_pattern, na=False)]
-
+    
+    df = df[['text']]
+    
     return df
 
 if __name__ == "__main__":
-    ragebait_candidates = pd.read_parquet("data/raw/ragebait_candidates.parquet", engine="pyarrow")
+    ragebait_candidates = pd.read_parquet("data/raw/ragebait_candidates_test.parquet", engine="pyarrow") # CHANGE THIS DEPENDING ON SITUTATION
 
-    gpt_input = clean(ragebait_candidates)
-    gpt_input.to_parquet("data/gpt_input/gpt_input_1.parquet")
+    jev_df = clean(ragebait_candidates)
+    jev_df.to_parquet("data/jev/jev_input_df.parquet")

@@ -1,3 +1,4 @@
 from .configs import (
-    queries
+    queries,
+    TYPESAFE_API_KEY
 )
