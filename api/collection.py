@@ -67,9 +67,9 @@ MIN_ENGAGEMENT = 50          # likes + replies + reposts
 MIN_LEN, MAX_LEN = 50, 280    # character bounds on post text
 
 MIN_SLEEP_SECS = 30.0         # baseline "be nice" delay between API calls
-MAX_SLEEP_SECS = 45.0
-LONG_COOLDOWN_EVERY = 15      # after N requests, take a longer breather
-LONG_COOLDOWN_SECS = (180, 300)
+MAX_SLEEP_SECS = 37.0
+LONG_COOLDOWN_EVERY = 30      # after N requests, take a longer breather
+LONG_COOLDOWN_SECS = (60, 120)
 
 SAVE_EVERY_N_NEW = 25         # flush to disk after this many new rows collected
 RESULTS_PER_QUERY_PAGE = 20   # twikit search page size ballpark
