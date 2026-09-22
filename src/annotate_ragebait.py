@@ -1,6 +1,7 @@
 import asyncio
 import os
 import time
+import argparse
 from pathlib import Path
 
 import pandas as pd
@@ -13,11 +14,9 @@ load_dotenv()
 
 TYPESAFE_API_KEY = os.environ.get("TYPESAFE_API_KEY")
 
-CONCURRENCY = 16          # tune: start ~16, double until throughput plateaus
+CONCURRENCY = 64          # 64 has the best throughput
 CHUNK_SIZE = 2000         # checkpoint granularity
 CHUNK_DIR = Path("data/jev/chunks")
-INPUT_PATH = "data/jev/jev_input_df.parquet"
-OUTPUT_PATH = "data/jev/jev_output_df.parquet"
 
 RETRY = RetryPolicy(
     max_retries=6,
@@ -221,7 +220,7 @@ async def process_chunk(
     return out, n_failed
 
 
-async def amain(df: pd.DataFrame) -> None:
+async def amain(df: pd.DataFrame, output_path: str) -> None:
     CHUNK_DIR.mkdir(parents=True, exist_ok=True)
 
     # Maximum number of API requests that can be in flight simultaneously.
@@ -281,10 +280,11 @@ async def amain(df: pd.DataFrame) -> None:
         ]
     )
 
-    full.to_parquet(OUTPUT_PATH)
+    full.to_parquet(output_path)
 
     total_in = full["input_tokens"].sum()
     total_out = full["output_tokens"].sum()
+    full = full.drop(columns=['input_tokens', 'output_tokens'])
 
     print("Parquet saved!")
     print(f"Number of rows: {len(full)}")
@@ -295,8 +295,17 @@ async def amain(df: pd.DataFrame) -> None:
     cost = total_in / 1e9 * 42
     print(f"Cost (note that output tokens are too cheap to measure): ${cost:.6f}")
 
+def parse_args() -> argparse.Namespace:
+    p = argparse.ArgumentParser(description="Annotate ragebait candidate posts.")
+    p.add_argument("--input", type=str, default="data/jev/jev_input_df.parquet",
+                    help="Path to the input Parquet file (must have a 'text' column).")
+    p.add_argument("--output", type=str, default="data/jev/jev_output_df.parquet",
+                    help="Path to write the final annotated Parquet file.")
+    return p.parse_args()
+
 
 if __name__ == "__main__":
-    df = pd.read_parquet(INPUT_PATH)
-    asyncio.run(amain(df))
+    args = parse_args()
+    df = pd.read_parquet(args.input)
+    asyncio.run(amain(df, args.output))
 

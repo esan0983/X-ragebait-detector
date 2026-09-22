@@ -1,6 +1,5 @@
 *.pyc
 data/
-api/__pycache__/
-utils/configs.py
+src/utils/configs.py
 extension/
 .env
