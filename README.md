@@ -167,7 +167,7 @@ For the initial collection, I got 50010 tweets, which were filtered down to 4981
 </details>  
 
 \
-Even with an incredibly detailed instructions and criteria, the results were still good: a total cost of **$4.71** and a total runtime of **2 hours and 48 minutes**.  
+Even with an incredibly detailed instructions and criteria, the results were still good: a total cost of **$4.71** and a total runtime of **2 hours and 48 minutes**. Note that I haven't implemented concurrency: this can be even faster.
 
 The first batch of annotated data will then be trained via a RoBERTa-base model (refer to Machine Learning for both phases of training)
 
@@ -175,9 +175,11 @@ The first batch of annotated data will then be trained via a RoBERTa-base model 
 ### Human Validation
 Two humans and the latest Jev model will annotate 300 posts to check for agreement.
 
-## Commit Notes (9/19)
-* Finished first batch of data annotation with extra Jev questions
-* Currently training initial classifier using Google Colab's T4 GPU
+## Commit Notes (9/21)
+* Project is reorganized
+* Finished training initial classifier model
+* Set up some EDA for first batch
+* Prepared src files to perform dataframe splitting and inference
 
 ## Post-Commit Plans:
 * Make a browser extension that detects ragebait potential

@@ -1,11 +1,11 @@
 """
-main/collection.py
+scripts/collection.py
 ========================================
 Collects candidate posts for a ragebait-detection dataset using twikit.
 
 Filters applied:
   - Posted within August 2026
-  - (likes + replies + reposts) >= 500
+  - (likes + replies + reposts) >= 50
   - 50 <= len(text) <= 280
   - Text content only -- no user/account fields are persisted
 
@@ -42,7 +42,7 @@ from typing import Iterable
 
 import pandas as pd
 
-from utils import queries
+from src.utils import queries
 
 try:
     from twikit import Client, TooManyRequests

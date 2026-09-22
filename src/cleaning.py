@@ -13,4 +13,4 @@ if __name__ == "__main__":
     ragebait_candidates = pd.read_parquet("data/raw/ragebait_candidates.parquet", engine="pyarrow") # CHANGE THIS DEPENDING ON SITUTATION
 
     jev_df = clean(ragebait_candidates)
-    jev_df.to_parquet("data/jev/jev_input_df.parquet")
+    jev_df.to_parquet("data/processed/ragebait_candidates_cleaned.parquet")

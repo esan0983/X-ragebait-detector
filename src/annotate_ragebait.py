@@ -1,12 +1,32 @@
-from typesafe_sdk import TypeSafeClient
-import pandas as pd
+import asyncio
 import os
+import time
+from pathlib import Path
+
+import pandas as pd
 from dotenv import load_dotenv
-from tqdm import tqdm
+from tqdm.asyncio import tqdm_asyncio
+from typesafe_sdk import AsyncTypeSafeClient, RetryPolicy, TypeSafeError
+
 
 load_dotenv()
 
 TYPESAFE_API_KEY = os.environ.get("TYPESAFE_API_KEY")
+
+CONCURRENCY = 16          # tune: start ~16, double until throughput plateaus
+CHUNK_SIZE = 2000         # checkpoint granularity
+CHUNK_DIR = Path("data/jev/chunks")
+INPUT_PATH = "data/jev/jev_input_df.parquet"
+OUTPUT_PATH = "data/jev/jev_output_df.parquet"
+
+RETRY = RetryPolicy(
+    max_retries=6,
+    backoff_initial=1.0,
+    backoff_max=30.0,
+    timeout=None,
+    # 429/5xx/timeouts/connection errors and Retry-After are handled by default
+)
+
 
 QUESTIONS = {
   "ragebait": {
@@ -119,66 +139,164 @@ QUESTIONS = {
   }
 }
 
-client = TypeSafeClient(
-    api_key=TYPESAFE_API_KEY,
-    timeout=120.0
-)
 
-def jev(text: str) -> dict:
-    response = client.system_one(
-        state=text,
-        questions=QUESTIONS,
-        model="jev-latest"
-    )
+RESULT_COLS = [
+    "ragebait", "controversial", "time_sensitivity", "nicheness",
+    "emotional_intensity", "content_type", "context_dependence",
+    "rhetorical_target", "generalization", "sarcasm_irony",
+]
 
-    answers = response.answers
-    return_dict = {
+
+def parse(response) -> dict:
+    a = response.answers
+    return {
         "input_tokens": response.usage.input_tokens,
-        "output_tokens": response.usage.output_tokens
+        "output_tokens": response.usage.output_tokens,
+        "ragebait": a["ragebait"].noul,
+        "controversial": a["controversial"].noul,
+        "time_sensitivity": a["time_sensitivity"].score,
+        "nicheness": a["nicheness"].score,
+        "emotional_intensity": a["emotional_intensity"].score,
+        "content_type": a["content_type"].choice,
+        "context_dependence": a["context_dependence"].score,
+        "rhetorical_target": a["rhetorical_target"].choice,
+        "generalization": a["generalization"].score,
+        "sarcasm_irony": a["sarcasm_irony"].score,
     }
 
-    return_dict["ragebait"] = answers["ragebait"].noul
-    return_dict["controversial"] = answers["controversial"].noul
-    return_dict["time_sensitivity"] = answers["time_sensitivity"].score
-    return_dict["nicheness"] = answers["nicheness"].score
-    return_dict["emotional_intensity"] = answers["emotional_intensity"].score
-    return_dict["content_type"] = answers["content_type"].choice
-    return_dict["context_dependence"] = answers["context_dependence"].score
-    return_dict["rhetorical_target"] = answers["rhetorical_target"].choice
-    return_dict["generalization"] = answers["generalization"].score
-    return_dict["sarcasm_irony"] = answers["sarcasm_irony"].score
 
-    return return_dict
+async def annotate_one(client, sem, text: str) -> dict | None:
+    async with sem:
+        try:
+            resp = await client.system_one(
+                state=text,
+                questions=QUESTIONS,
+                model="jev-latest",
+            )
+            return parse(resp)
+        except TypeSafeError as e:
+            print(f"Failed: {e!r}")
+            return None
 
-def main(df: pd.DataFrame) -> None:
-    total_input = 0
-    total_output = 0
-    
-    results_list = []
-    
-    for text in tqdm(df['text'], desc="Processing requests"):
-        metric_dict = jev(text)
-        
-        total_input += metric_dict.get("input_tokens", 0)
-        total_output += metric_dict.get("output_tokens", 0)
 
-        row_answers = {
-            k: v for k, v in metric_dict.items() 
-            if k not in ["input_tokens", "output_tokens"]
-        }
-        results_list.append(row_answers)
-        
-    results_df = pd.DataFrame(results_list, index=df.index)
-    df = pd.concat([df, results_df], axis=1)
-    
-    df.to_parquet("data/jev/jev_output_df.parquet")
+async def annotate_texts(
+    client,
+    sem,
+    texts: list[str],
+) -> list[dict | None]:
+    tasks = [annotate_one(client, sem, t) for t in texts]
+    return await tqdm_asyncio.gather(*tasks, leave=False)
+
+
+async def process_chunk(
+    client,
+    sem,
+    chunk: pd.DataFrame,
+) -> tuple[pd.DataFrame, int]:
+    texts = chunk["text"].tolist()
+    results = await annotate_texts(client, sem, texts)
+
+    # One extra pass over anything that still failed.
+    failed = [i for i, r in enumerate(results) if r is None]
+
+    if failed:
+        print(f"  Retrying {len(failed)} failed rows...")
+        redo = await annotate_texts(
+            client,
+            sem,
+            [texts[i] for i in failed],
+        )
+
+        for i, r in zip(failed, redo):
+            results[i] = r
+
+    n_failed = sum(r is None for r in results)
+
+    rows = [r if r else {} for r in results]
+    out = pd.concat(
+        [chunk, pd.DataFrame(rows, index=chunk.index)],
+        axis=1,
+    )
+
+    return out, n_failed
+
+
+async def amain(df: pd.DataFrame) -> None:
+    CHUNK_DIR.mkdir(parents=True, exist_ok=True)
+
+    # Maximum number of API requests that can be in flight simultaneously.
+    sem = asyncio.Semaphore(CONCURRENCY)
+
+    async with AsyncTypeSafeClient(
+        api_key=TYPESAFE_API_KEY,
+        timeout=120.0,
+        retry=RETRY,
+    ) as client:
+
+        for start in range(0, len(df), CHUNK_SIZE):
+            path = CHUNK_DIR / f"chunk_{start:06d}.parquet"
+
+            # Resume: skip chunks that have already been completed.
+            if path.exists():
+                print(f"Skipping {path.name} (already exists)")
+                continue
+
+            chunk = df.iloc[start:start + CHUNK_SIZE]
+
+            # ---------------------------------------------------------------
+            # Benchmark this chunk.
+            # ---------------------------------------------------------------
+            chunk_start_time = time.perf_counter()
+
+            out, n_failed = await process_chunk(
+                client,
+                sem,
+                chunk,
+            )
+
+            elapsed = time.perf_counter() - chunk_start_time
+
+            n_posts = len(chunk)
+            posts_per_sec = n_posts / elapsed if elapsed > 0 else float("inf")
+            failure_rate = n_failed / n_posts if n_posts > 0 else 0.0
+
+            # Save checkpoint after the entire chunk has finished.
+            out.to_parquet(path)
+
+            print(
+                f"\n{path.name} complete"
+                f"\n  Posts:        {n_posts:,}"
+                f"\n  Elapsed:      {elapsed:.2f} sec"
+                f"\n  Throughput:   {posts_per_sec:.2f} posts/sec"
+                f"\n  Failures:     {n_failed:,} ({failure_rate:.2%})"
+                f"\n  Concurrency:  {CONCURRENCY}"
+                f"\n  Saved:        {path}"
+                f"\n"
+            )
+
+    full = pd.concat(
+        [
+            pd.read_parquet(p)
+            for p in sorted(CHUNK_DIR.glob("chunk_*.parquet"))
+        ]
+    )
+
+    full.to_parquet(OUTPUT_PATH)
+
+    total_in = full["input_tokens"].sum()
+    total_out = full["output_tokens"].sum()
+
     print("Parquet saved!")
-    print(f"Number of rows: {len(df)}")
-    print(f"Input tokens spent: {total_input}")
-    print(f"Output tokens spent: {total_output}")
-    cost = total_input / 1e9 * 42
+    print(f"Number of rows: {len(full)}")
+    print(f"Rows still missing annotations: {full['ragebait'].isna().sum()}")
+    print(f"Input tokens spent: {total_in:.0f}")
+    print(f"Output tokens spent: {total_out:.0f}")
+
+    cost = total_in / 1e9 * 42
     print(f"Cost (note that output tokens are too cheap to measure): ${cost:.6f}")
 
+
 if __name__ == "__main__":
-    df = pd.read_parquet("data/jev/jev_input_df.parquet")
-    main(df)
+    df = pd.read_parquet(INPUT_PATH)
+    asyncio.run(amain(df))
+
