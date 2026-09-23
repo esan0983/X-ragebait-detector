@@ -4,13 +4,6 @@ train_ragebait_regressor.py
 Fine-tunes a transformer (RoBERTa-base by default) as a regressor that maps
 tweet text -> a continuous "ragebait score" in [0, 1].
 
-Why a regressor instead of the classifier used in earlier prototyping:
-  - The annotation scheme here produces a continuous score per tweet, not a
-    discrete label, so treating it as classification would throw away signal
-    (and require an arbitrary binning scheme).
-  - MSE/MAE regression with a sigmoid-bounded output head lets the model
-    natively respect the [0, 1] constraint without post-hoc clipping tricks.
-
 Design:
   - Backbone: any HF encoder (default "roberta-base", matches the classifier
     baseline already used in this project for consistency).
@@ -18,31 +11,17 @@ Design:
     -> sigmoid, so predictions are always in [0, 1] by construction.
   - Loss: MSE (regression). We additionally report MAE, RMSE, and Spearman
     correlation, since Spearman tells you whether the *ranking* of tweets by
-    "how ragebait-y" they are is being learned even if absolute calibration
-    is imperfect -- often the more decision-relevant property downstream.
+    "how ragebait-y" they are is accurate.
   - Hyperparameter search: Optuna, optimizing mean CV MAE (MAE is used as
     the optimization objective rather than MSE because tweet engagement/score
     distributions tend to be skewed with outliers, and MAE is less dominated
-    by a few extreme points -- MSE is still reported per-fold for visibility).
+    by a few extreme points).
   - Cross-validation: K-fold (default 5) on the training split, both for the
     HPO objective (robustness against fold-specific luck) and to give a
     reliable estimate of generalization before committing to a final fit.
   - Final model: after HPO selects the best hyperparameters, we refit once
     on the FULL train+val data with those hyperparameters and evaluate on a
     held-out test split, then persist to disk for inference.
-
-Usage (as a library):
-    from train_ragebait_regressor import train_ragebait_regressor
-    result = train_ragebait_regressor(df)  # df has columns "text", "score"
-    # result["model_dir"] -> where the final model/tokenizer were saved
-    # result["test_metrics"] -> dict of MAE/MSE/RMSE/Spearman on held-out test
-
-Usage (as a script):
-    python train_ragebait_regressor.py --data data/processed/final_dataset.parquet
-
-Inference (separate, lightweight -- see load_regressor_for_inference()):
-    predict_fn = load_regressor_for_inference("data/ml_data")
-    scores = predict_fn(["some tweet text", "another tweet"])
 """
 
 from __future__ import annotations

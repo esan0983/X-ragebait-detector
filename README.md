@@ -3,6 +3,13 @@
 A data science & machine learning project, with most of its inspiration taken from this [paper](https://arxiv.org/html/2609.02262v1). It is an end-to-end data pipeline, ending with a machine learning algorithm that can score posts by their ragebait and controversial factor. Supplemental applications of this project will also be included in this repository.
 
 ## Data Pipeline
+
+Heavily inspired by the Japanese paper, here is the following pipeline:  
+
+![Data Pipeline](media/data_pipeline.jpg)  
+
+After data cleaning, the dataset will be split into two and will merge at the end for the final ML phase.
+
 ### Collection
 I used the twikit package. Since I don't want to get banned, I want to do this right with a robust architecture and proper API calling, so with a detailed enough prompt, I let Claude generate a data collection script. The script handles rate limits well with randomized wait times and exponential back-offs as a response to 429s.  
 
@@ -11,7 +18,7 @@ These are the following criteria for data collection:
 * Likes + replies + reposts >= 50
 * In between 50 and 280 characters  
 
-A large table of keywords was constructed to increase the chances of collecting ragebait/controversial posts. There is a huge trade-off: a lot of the statistical analysis (especially the studies made by the Japanese paper) will be subject to selection bias. For example, we can't construct a word cloud anymore as the results will essentially just duplicate the keyword table. In return, we will have a lot of training data in a significantly shorter period of time.
+A large table of search keywords was constructed to increase the chances of collecting ragebait/controversial posts. There is a huge trade-off: a lot of the statistical analysis (especially the studies made by the Japanese paper) will be subject to selection bias. For example, we can't construct a word cloud anymore as the results will essentially just duplicate the keyword table. In return, we will have a lot of training data in a significantly shorter period of time.
 
 ### Cleaning
 * Removed post duplicates
@@ -169,21 +176,22 @@ For the initial collection, I got 50010 tweets, which were filtered down to 4981
 \
 Even with an incredibly detailed instructions and criteria, the results were still good: a total cost of **$4.71** and a total runtime of **2 hours and 48 minutes**. Note that I haven't implemented concurrency: this can be even faster.
 
-The first batch of annotated data will then be trained via a RoBERTa-base model (refer to Machine Learning for both phases of training)
-
-
 ### Human Validation
 Two humans and the latest Jev model will annotate 300 posts to check for agreement.
 
-## Commit Notes (9/21)
-* Project is reorganized
-* Finished training initial classifier model
-* Set up some EDA for first batch
-* Prepared src files to perform dataframe splitting and inference
+## Machine Learning
+
+The first batch of annotated data will then be trained via a RoBERTa-base model (refer to Machine Learning for both phases of training). For hyperparameter optimization, a subset of 12,000 posts are used. Optuna was used with 5-fold cross-validation for 12 trials. MAE was used for Optuna. The test results are the following (for a ragebait scale from 0 to 1):
+* MAE: 0.0744
+* MSE: 0.0102
+* Spearman: 0.8539
+
+## Commit Notes (9/23)
+* Fleshed out README a little more
+* Tested inference.py and it worked pretty well
 
 ## Post-Commit Plans:
 * Make a browser extension that detects ragebait potential
-* Flesh out and make the data pipeline section of the README easier to read. Right now, the audience has no idea on what the data pipeline looks like.
 
 ## Sources
 1. From Detection to Characterization: A Large-Scale Study of Ragebait on Japanese X. (n.d.). https://arxiv.org/html/2609.02262v1
